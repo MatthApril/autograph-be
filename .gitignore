@@ -1,24 +1,8 @@
-# Rust build output
 /target/
+/.env
+/.env.*
+!/.env.example
 
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# Editor / IDE
-.idea/
 .vscode/
-*.swp
-*.swo
-
-# Operating system
-.DS_Store
-Thumbs.db
-
-# Logs
+.idea/
 *.log
-
-# Temporary files
-*.tmp
-*.bak
