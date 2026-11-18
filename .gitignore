@@ -1,8 +1,20 @@
+# Rust Build
 /target/
-/.env
-/.env.*
-!/.env.example
+**/target/
 
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
 .vscode/
 .idea/
+
+# Logs
 *.log
+
+# Operating System
+.DS_Store
+Thumbs.db
+Desktop.ini

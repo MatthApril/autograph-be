@@ -1,7 +1,9 @@
-use axum::Json;
+use axum::{Json, extract::State};
 use serde_json::{Value, json};
 
-pub async fn login() -> Json<Value> {
+use crate::config::app_state::AppState;
+
+pub async fn login(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "message": "User logged in successfully",
         "data": []
