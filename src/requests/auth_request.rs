@@ -12,3 +12,9 @@ pub struct RegisterRequest {
     #[validate(length(min = 8, max = 128))]
     pub password: String,
 }
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct GoogleLoginRequest {
+    #[validate(length(min = 1))]
+    pub id_token: String,
+}
