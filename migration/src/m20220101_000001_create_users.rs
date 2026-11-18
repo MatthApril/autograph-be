@@ -31,6 +31,11 @@ impl MigrationTrait for Migration {
                             .unique_key(),
                     )
                     .col(ColumnDef::new(Users::Password).string_len(255).not_null())
+                    .col(
+                        ColumnDef::new(Users::GoogleSub)
+                            .string_len(255)
+                            .unique_key(),
+                    )
                     .to_owned(),
             )
             .await
@@ -50,4 +55,5 @@ enum Users {
     Username,
     Email,
     Password,
+    GoogleSub,
 }
