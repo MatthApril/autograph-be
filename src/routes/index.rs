@@ -12,4 +12,3 @@ pub fn router() -> Router<AppState> {
 
     Router::new().nest(&api_prefix, api_routes)
 }
-    

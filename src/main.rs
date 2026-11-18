@@ -16,7 +16,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = routes::index::router().with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
-    println!("Server running at http://localhost:3000");
+    println!(
+        "Server running at http://localhost:3000{}",
+        &std::env::var("API_PREFIX").unwrap_or_else(|_| "/api".to_string())
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
