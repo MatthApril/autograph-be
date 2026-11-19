@@ -1,20 +1,5 @@
-# Rust Build
-/target/
-**/target/
-
-# Environment
+node_modules/
+dist/
 .env
-.env.*
-!.env.example
 
-# IDE
-.vscode/
-.idea/
-
-# Logs
-*.log
-
-# Operating System
-.DS_Store
-Thumbs.db
-Desktop.ini
+/src/generated/prisma
