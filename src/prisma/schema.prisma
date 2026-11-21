@@ -13,13 +13,14 @@ datasource db {
 }
 
 model users {
-  user_id   Int       @id @default(autoincrement())
-  username  String    @unique
-  password  String
-  email     String    @unique
+  user_id   Int     @id @default(autoincrement())
+  name      String?
+  password  String?
+  email     String  @unique
+  googleSub String? @unique @map("google_sub")
+  picture   String?
+
   createdAt DateTime  @default(now())
-  updatedAt DateTime? 
-  deletedAt DateTime? 
+  updatedAt DateTime?
+  deletedAt DateTime?
 }
-
-
