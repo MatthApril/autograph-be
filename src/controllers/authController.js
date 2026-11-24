@@ -11,213 +11,290 @@ const { transporter } = require("../constants/transporter");
 const mailOptions = require("../constants/mailOptions");
 const renderOTPTemplate = require("../helpers/renderOTPTemplate");
 const { redisClient } = require("../config/redisClient");
-const jwt = require("jsonwebtoken");
+const jwt = require("jsonwebtoken")
+const { sendSuccess, sendError } = require("../helpers/apiResponse");
+const {
+	OTP_TTL_SECONDS,
+	PENDING_TTL_SECONDS,
+	RESEND_COOLDOWN_SECONDS,
+	MAX_ATTEMPTS,
+} = require("../constants/otp");
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// "Maya@Example.com " and "maya@example.com" must be the same account
+const normalizeEmail = (email) =>
+	typeof email === "string" ? email.trim().toLowerCase() : "";
+
+const pendingKey = (email) => `register:${email}`;
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+const savePending = (email, pending) =>
+	redisClient.set(pendingKey(email), JSON.stringify(pending), {
+		EX: PENDING_TTL_SECONDS,
+	});
+
+const sendOtpEmail = (email, otp) =>
+	transporter.sendMail(
+		mailOptions(email, "Autograph - Verify Your Email", renderOTPTemplate(otp)),
+	);
+
+// Tells the app how long to count down, so its timer matches the server
+const otpTiming = (email) => ({
+	email,
+	otp_expires_in: OTP_TTL_SECONDS,
+	resend_available_in: RESEND_COOLDOWN_SECONDS,
+});
+
+const publicUser = (user) => ({
+	user_id: user.user_id,
+	name: user.name,
+	email: user.email,
+	picture: user.picture ?? null,
+});
+
+const issueSession = (user) => ({
+	user: publicUser(user),
+	access_token: generateAccessToken(user),
+	refresh_token: generateRefreshToken(user),
+});
 
 const login = async (req, res) => {
+	const email = normalizeEmail(req.body?.email);
+	const password =
+		typeof req.body?.password === "string" ? req.body.password : "";
+
 	try {
-		const { email, password } = req.body;
-		const user_login = await prisma.users.findUnique({
-			where: { email },
-			omit: {
-				googleSub: true,
-				createdAt: true,
-				updatedAt: true,
-				deletedAt: true,
-			},
-		});
+		const user = await prisma.users.findUnique({ where: { email } });
 
-		if (!user_login) {
-			return res.status(400).json({
-				status: 400,
-				message: "Invalid username or password!",
-			});
+		// Google-only accounts have no password; bcrypt.compare would crash on null
+		const valid = user?.password
+			? await bcrypt.compare(password, user.password)
+			: false;
+		if (!valid) {
+			return sendError(
+				res,
+				401,
+				"INVALID_CREDENTIALS",
+				"Incorrect email or password.",
+			);
 		}
 
-		const is_valid_pass = await bcrypt.compare(password, user_login.password);
-		if (!is_valid_pass) {
-			return res.status(400).json({
-				status: 400,
-				message: "Invalid username or password!",
-			});
-		}
-
-		user_login.password = undefined;
-		const access_token = generateAccessToken(user_login);
-		const refresh_token = generateRefreshToken(user_login);
-
-		user_login.access_token = access_token;
-		user_login.refresh_token = refresh_token;
-
-		return res.status(200).json(user_login);
+		return sendSuccess(res, 200, "Login successful.", issueSession(user));
 	} catch (error) {
-		console.error("Error fetching users:", error);
-		return res.status(500).json({ error: "Internal Server Error" });
+		console.error("Error logging in:", error);
+		return sendError(res, 500, "INTERNAL", "Internal Server Error");
 	}
 };
 
 const register = async (req, res) => {
+	const email = normalizeEmail(req.body?.email);
+	const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+	const { password, confirm_password } = req.body ?? {};
+
 	try {
-		const { name, email, password, confirm_password } = req.body;
+		// Never trust the app alone: check input on the server too
+		if (
+			!name ||
+			!EMAIL_PATTERN.test(email) ||
+			typeof password !== "string" ||
+			password.length < 8
+		) {
+			return sendError(
+				res,
+				400,
+				"VALIDATION_ERROR",
+				"Please enter a name, a valid email and a password of at least 8 characters.",
+			);
+		}
 		if (password !== confirm_password) {
-			return res.status(400).json({
-				status: 400,
-				message: "Passwords do not match!",
-			});
+			return sendError(
+				res,
+				400,
+				"PASSWORD_MISMATCH",
+				"Passwords do not match!",
+			);
 		}
 
-		const existingUser = await prisma.users.findUnique({
-			where: { email: email },
-		});
-
+		const existingUser = await prisma.users.findUnique({ where: { email } });
 		if (existingUser) {
-			return res.status(409).json({
-				status: 409,
-				message: "Email already registered!",
-			});
+			return sendError(res, 409, "EMAIL_TAKEN", "Email already registered!");
 		}
 
-		const redisKey = `register:${email}`;
-		const exists = await redisClient.exists(redisKey);
-
-		if (exists) {
-			return res.status(409).json({
-				status: 409,
-				message: "Please verify your email before registering again!",
-			});
-		}
-
-		const hashedPassword = await bcrypt.hash(password, 10);
 		const otp = generateOTP();
-
-		const pendingUser = {
-			name: name.trim(),
-			email: email,
-			password: hashedPassword,
+		const pending = {
+			name,
+			email,
+			password: await bcrypt.hash(password, 10),
 			otp,
+			otpExpiresAt: nowSeconds() + OTP_TTL_SECONDS,
+			lastSentAt: nowSeconds(),
+			attempts: 0,
 		};
 
-		await redisClient.set(redisKey, JSON.stringify(pendingUser), {
-			EX: 60,
-			NX: true,
-		});
-
-		await transporter.sendMail(
-			mailOptions(
-				email,
-				"Autograph - Verify Your Email",
-				renderOTPTemplate(otp),
-			),
+		// NX = "only if it doesn't exist yet". Check and save in ONE step, so two
+		// fast taps on "Create account" can't both succeed.
+		const saved = await redisClient.set(
+			pendingKey(email),
+			JSON.stringify(pending),
+			{
+				EX: PENDING_TTL_SECONDS,
+				NX: true,
+			},
 		);
+		if (!saved) {
+			return sendError(
+				res,
+				409,
+				"VERIFICATION_PENDING",
+				"Please verify your email before registering again!",
+			);
+		}
 
-		return res.status(200).json({
-			status: 200,
-			message: "Verification code sent successfully.",
-			data: null,
-		});
+		try {
+			await sendOtpEmail(email, otp);
+		} catch (mailError) {
+			// No email went out, so don't leave a pending sign-up nobody can verify
+			await redisClient.del(pendingKey(email));
+			throw mailError;
+		}
+
+		return sendSuccess(
+			res,
+			200,
+			"Verification code sent successfully.",
+			otpTiming(email),
+		);
 	} catch (error) {
 		console.error("Error registering user:", error);
-
-		return res.status(500).json({
-			status: 500,
-			message: "Internal Server Error",
-			data: null,
-		});
+		return sendError(res, 500, "INTERNAL", "Internal Server Error");
 	}
 };
 
 const verifyEmail = async (req, res) => {
+	const email = normalizeEmail(req.body?.email);
+	const otp = String(req.body?.otp ?? "").trim(); // always compare strings
+
 	try {
-		const { email, otp } = req.body;
-		const redisKey = `register:${email}`;
-		const pendingUserData = await redisClient.get(redisKey);
-
-		if (!pendingUserData) {
-			return res.status(400).json({
-				status: 400,
-				message: "No pending registration found for this email.",
-			});
+		const raw = await redisClient.get(pendingKey(email));
+		if (!raw) {
+			return sendError(
+				res,
+				404,
+				"NO_PENDING_SIGNUP",
+				"Your sign-up timed out. Please create your account again.",
+			);
 		}
 
-		const pendingUser = JSON.parse(pendingUserData);
+		const pending = JSON.parse(raw);
 
-		if (pendingUser.otp !== otp) {
-			return res.status(400).json({
-				status: 400,
-				message: "Invalid verification code.",
-			});
+		if (nowSeconds() > pending.otpExpiresAt) {
+			return sendError(res, 410, "OTP_EXPIRED", "This code has expired.");
 		}
 
-		await prisma.users.create({
+		if (pending.otp !== otp) {
+			pending.attempts += 1;
+
+			if (pending.attempts >= MAX_ATTEMPTS) {
+				await redisClient.del(pendingKey(email));
+				return sendError(
+					res,
+					429,
+					"TOO_MANY_ATTEMPTS",
+					"Too many wrong codes. Please create your account again.",
+				);
+			}
+
+			// Save the new attempt count without resetting the sign-up's lifetime
+			const ttl = await redisClient.ttl(pendingKey(email));
+			await redisClient.set(pendingKey(email), JSON.stringify(pending), {
+				EX: Math.max(ttl, 1),
+			});
+
+			return sendError(
+				res,
+				400,
+				"OTP_INVALID",
+				"That code isn't right. Try again.",
+				{
+					attempts_left: MAX_ATTEMPTS - pending.attempts,
+				},
+			);
+		}
+
+		const user = await prisma.users.create({
 			data: {
-				name: pendingUser.name,
-				email: pendingUser.email,
-				password: pendingUser.password,
+				name: pending.name,
+				email: pending.email,
+				password: pending.password,
 			},
 		});
+		await redisClient.del(pendingKey(email));
 
-		await redisClient.del(redisKey);
-
-		return res.status(200).json({
-			status: 200,
-			message: "Email verified successfully.",
-			data: null,
-		});
+		// Log the new user in straight away: same shape as /login
+		return sendSuccess(
+			res,
+			201,
+			"Email verified successfully.",
+			issueSession(user),
+		);
 	} catch (error) {
+		if (error.code === "P2002") {
+			// Prisma's "unique constraint" error: two verify requests raced each other
+			return sendError(res, 409, "EMAIL_TAKEN", "Email already registered!");
+		}
 		console.error("Error verifying email:", error);
-
-		return res.status(500).json({
-			status: 500,
-			message: "Internal Server Error",
-			data: null,
-		});
+		return sendError(res, 500, "INTERNAL", "Internal Server Error");
 	}
 };
 
 const refreshOTP = async (req, res) => {
-	try {
-		const { email } = req.body;
-		const redisKey = `register:${email}`;
-		const pendingUserData = await redisClient.get(redisKey);
+	const email = normalizeEmail(req.body?.email);
 
-		if (!pendingUserData) {
-			return res.status(400).json({
-				status: 400,
-				message: "No pending registration found for this email.",
-			});
+	try {
+		const raw = await redisClient.get(pendingKey(email));
+		if (!raw) {
+			return sendError(
+				res,
+				404,
+				"NO_PENDING_SIGNUP",
+				"Your sign-up timed out. Please create your account again.",
+			);
 		}
 
-		const pendingUser = JSON.parse(pendingUserData);
-		const newOtp = generateOTP();
-		pendingUser.otp = newOtp;
+		const pending = JSON.parse(raw);
+		const waitSeconds =
+			pending.lastSentAt + RESEND_COOLDOWN_SECONDS - nowSeconds();
+		if (waitSeconds > 0) {
+			return sendError(
+				res,
+				429,
+				"RESEND_TOO_SOON",
+				`Please wait ${waitSeconds}s before requesting a new code.`,
+				{ resend_available_in: waitSeconds },
+			);
+		}
 
-		await redisClient.del(redisKey);
-
-		await redisClient.set(redisKey, JSON.stringify(pendingUser), {
-			EX: 60,
-			NX: true,
+		const otp = generateOTP();
+		// Send first: if the email fails, the old record (and code) stays as it was
+		await sendOtpEmail(email, otp);
+		await savePending(email, {
+			...pending,
+			otp,
+			otpExpiresAt: nowSeconds() + OTP_TTL_SECONDS,
+			lastSentAt: nowSeconds(),
+			attempts: 0,
 		});
 
-		await transporter.sendMail(
-			mailOptions(
-				email,
-				"Autograph - Verify Your Email",
-				renderOTPTemplate(newOtp),
-			),
+		return sendSuccess(
+			res,
+			200,
+			"New verification code sent successfully.",
+			otpTiming(email),
 		);
-
-		return res.status(200).json({
-			status: 200,
-			message: "New verification code sent successfully.",
-			data: null,
-		});
 	} catch (error) {
 		console.error("Error refreshing OTP:", error);
-
-		return res.status(500).json({
-			status: 500,
-			message: "Internal Server Error",
-			data: null,
-		});
+		return sendError(res, 500, "INTERNAL", "Internal Server Error");
 	}
 };
 

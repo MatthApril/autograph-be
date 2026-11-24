@@ -14,6 +14,15 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(prefix, mainRouter.authRouter);
 
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+  });
+});
+
 const startServer = async () => {
 	try {
 		await connectRedis();
