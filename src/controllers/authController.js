@@ -374,7 +374,8 @@ const signInWithGoogle = async (req, res) => {
 
 const refreshToken = async (req, res) => {
 	try {
-		const { refresh_token } = req.body;
+		const header = req.headers.authorization ?? "";
+		const refresh_token = header.startsWith("Bearer ") ? header.slice(7) : null;
 
 		if (!refresh_token) {
 			return res.status(400).json({
