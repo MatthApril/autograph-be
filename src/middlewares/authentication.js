@@ -2,7 +2,6 @@ const jwt = require("jsonwebtoken");
 
 const authentication = async (req, res, next) => {
 	try {
-		// Node lowercases header names, so read the standard "Authorization: Bearer <token>"
 		const header = req.headers.authorization ?? "";
 		const access_token = header.startsWith("Bearer ") ? header.slice(7) : null;
 

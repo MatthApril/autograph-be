@@ -11,7 +11,7 @@ const { transporter } = require("../constants/transporter");
 const mailOptions = require("../constants/mailOptions");
 const renderOTPTemplate = require("../helpers/renderOTPTemplate");
 const { redisClient } = require("../config/redisClient");
-const jwt = require("jsonwebtoken")
+const jwt = require("jsonwebtoken");
 const { sendSuccess, sendError } = require("../helpers/apiResponse");
 const {
 	OTP_TTL_SECONDS,
@@ -22,7 +22,6 @@ const {
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// "Maya@Example.com " and "maya@example.com" must be the same account
 const normalizeEmail = (email) =>
 	typeof email === "string" ? email.trim().toLowerCase() : "";
 
@@ -39,7 +38,6 @@ const sendOtpEmail = (email, otp) =>
 		mailOptions(email, "Autograph - Verify Your Email", renderOTPTemplate(otp)),
 	);
 
-// Tells the app how long to count down, so its timer matches the server
 const otpTiming = (email) => ({
 	email,
 	otp_expires_in: OTP_TTL_SECONDS,
@@ -67,10 +65,9 @@ const login = async (req, res) => {
 	try {
 		const user = await prisma.users.findUnique({ where: { email } });
 
-		// Google-only accounts have no password; bcrypt.compare would crash on null
-		const valid = user?.password
-			? await bcrypt.compare(password, user.password)
-			: false;
+		const valid =
+			user?.password ? await bcrypt.compare(password, user.password) : false;
+
 		if (!valid) {
 			return sendError(
 				res,
@@ -93,7 +90,6 @@ const register = async (req, res) => {
 	const { password, confirm_password } = req.body ?? {};
 
 	try {
-		// Never trust the app alone: check input on the server too
 		if (
 			!name ||
 			!EMAIL_PATTERN.test(email) ||
@@ -107,6 +103,7 @@ const register = async (req, res) => {
 				"Please enter a name, a valid email and a password of at least 8 characters.",
 			);
 		}
+
 		if (password !== confirm_password) {
 			return sendError(
 				res,
@@ -132,8 +129,6 @@ const register = async (req, res) => {
 			attempts: 0,
 		};
 
-		// NX = "only if it doesn't exist yet". Check and save in ONE step, so two
-		// fast taps on "Create account" can't both succeed.
 		const saved = await redisClient.set(
 			pendingKey(email),
 			JSON.stringify(pending),
@@ -142,6 +137,7 @@ const register = async (req, res) => {
 				NX: true,
 			},
 		);
+
 		if (!saved) {
 			return sendError(
 				res,
@@ -154,9 +150,8 @@ const register = async (req, res) => {
 		try {
 			await sendOtpEmail(email, otp);
 		} catch (mailError) {
-			// No email went out, so don't leave a pending sign-up nobody can verify
 			await redisClient.del(pendingKey(email));
-			throw mailError;
+			console.error("Error sending OTP email:", mailError);
 		}
 
 		return sendSuccess(
@@ -173,7 +168,7 @@ const register = async (req, res) => {
 
 const verifyEmail = async (req, res) => {
 	const email = normalizeEmail(req.body?.email);
-	const otp = String(req.body?.otp ?? "").trim(); // always compare strings
+	const otp = String(req.body?.otp ?? "").trim();
 
 	try {
 		const raw = await redisClient.get(pendingKey(email));
@@ -189,6 +184,7 @@ const verifyEmail = async (req, res) => {
 		const pending = JSON.parse(raw);
 
 		if (nowSeconds() > pending.otpExpiresAt) {
+			redisClient.del(pendingKey(email));
 			return sendError(res, 410, "OTP_EXPIRED", "This code has expired.");
 		}
 
@@ -205,7 +201,6 @@ const verifyEmail = async (req, res) => {
 				);
 			}
 
-			// Save the new attempt count without resetting the sign-up's lifetime
 			const ttl = await redisClient.ttl(pendingKey(email));
 			await redisClient.set(pendingKey(email), JSON.stringify(pending), {
 				EX: Math.max(ttl, 1),
@@ -222,6 +217,12 @@ const verifyEmail = async (req, res) => {
 			);
 		}
 
+		const userExists = await prisma.users.findUnique({ where: { email } });
+		if (userExists) {
+			await redisClient.del(pendingKey(email));
+			return sendError(res, 409, "EMAIL_TAKEN", "Email already registered!");
+		}
+
 		const user = await prisma.users.create({
 			data: {
 				name: pending.name,
@@ -229,9 +230,9 @@ const verifyEmail = async (req, res) => {
 				password: pending.password,
 			},
 		});
+
 		await redisClient.del(pendingKey(email));
 
-		// Log the new user in straight away: same shape as /login
 		return sendSuccess(
 			res,
 			201,
@@ -239,10 +240,6 @@ const verifyEmail = async (req, res) => {
 			issueSession(user),
 		);
 	} catch (error) {
-		if (error.code === "P2002") {
-			// Prisma's "unique constraint" error: two verify requests raced each other
-			return sendError(res, 409, "EMAIL_TAKEN", "Email already registered!");
-		}
 		console.error("Error verifying email:", error);
 		return sendError(res, 500, "INTERNAL", "Internal Server Error");
 	}
@@ -276,7 +273,6 @@ const refreshOTP = async (req, res) => {
 		}
 
 		const otp = generateOTP();
-		// Send first: if the email fails, the old record (and code) stays as it was
 		await sendOtpEmail(email, otp);
 		await savePending(email, {
 			...pending,
