@@ -321,23 +321,11 @@ const signInWithGoogle = async (req, res) => {
 
 		const { sub, email, name, picture } = payload;
 		let user = await prisma.users.findUnique({
-			where: { googleSub: sub },
+			where: { email: email },
 		});
 
 		let isNewUser = false;
-
 		if (!user) {
-			const existingUser = await prisma.users.findUnique({
-				where: { email },
-			});
-
-			if (existingUser) {
-				return res.status(409).json({
-					message: "Email already registered. Please link your Google account.",
-					data: null,
-				});
-			}
-
 			user = await prisma.users.create({
 				data: {
 					name: name?.trim() || email.split("@")[0],
@@ -348,6 +336,11 @@ const signInWithGoogle = async (req, res) => {
 			});
 
 			isNewUser = true;
+		} else {
+			await prisma.users.update({
+				where: { email: email },
+				data: { googleSub: sub },
+			});
 		}
 
 		return res.status(isNewUser ? 201 : 200).json({
