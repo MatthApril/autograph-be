@@ -14,13 +14,12 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(prefix, mainRouter.authRouter);
 
-
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: Date.now(),
-  });
+app.get("/health", (req, res) => {
+	res.status(200).json({
+		status: "ok",
+		uptime: process.uptime(),
+		timestamp: Date.now(),
+	});
 });
 
 const startServer = async () => {
@@ -28,8 +27,8 @@ const startServer = async () => {
 		await connectRedis();
 
 		console.log("Redis connected successfully");
-		app.listen(port, () => {
-			console.log(`Server running on port ${port}`);
+		app.listen(PORT, "0.0.0.0", () => {
+			console.log(`Server running on port ${PORT}`);
 		});
 	} catch (error) {
 		console.error("Failed to start server:", error);
