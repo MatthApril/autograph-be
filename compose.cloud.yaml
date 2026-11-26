@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://localhost:6379
+    depends_on:
+      - redis
+    x-google-cloudrun:
+      ingress-container: true
+
+  redis:
+    image: redis:8-alpine
+    expose:
+      - "6379"
