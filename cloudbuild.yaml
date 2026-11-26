@@ -1,0 +1,18 @@
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/google-cloud-cli:stable'
+    entrypoint: 'gcloud'
+    args:
+      - 'beta'
+      - 'run'
+      - 'compose'
+      - 'up'
+      - 'compose.cloud.yaml'
+      - '--build'
+      - '--region=asia-southeast2'
+      - '--allow-unauthenticated'
+      - '--quiet'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '1200s'
